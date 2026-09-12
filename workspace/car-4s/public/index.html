@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>汽车4S店维修管理系统</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="logo">🚗 4S店维修管理</div>
+    <nav>
+      <a v-for="m in menus" :key="m.key" :class="{active: view===m.key}" @click="go(m.key)">
+        <span class="ico">{{m.icon}}</span>{{m.label}}
+        <em v-if="m.key==='dashboard' && badgeCount" class="badge">{{badgeCount}}</em>
+      </a>
+    </nav>
+    <div class="side-foot">SQLite · Express · Vue3</div>
+  </aside>
+
+  <main class="main">
+    <!-- ============ 工作台 ============ -->
+    <section v-if="view==='dashboard'">
+      <h2>工作台</h2>
+      <div class="cards">
+        <div class="card c1" @click="goOrders('reception')"><b>{{dash.stats.reception}}</b><span>已接待</span></div>
+        <div class="card c2" @click="goOrders('repairing')"><b>{{dash.stats.repairing}}</b><span>维修中</span></div>
+        <div class="card c3" @click="goOrders('qc')"><b>{{dash.stats.qc}}</b><span>待质检</span></div>
+        <div class="card c4" @click="goOrders('settling')"><b>{{dash.stats.settling}}</b><span>待结算</span></div>
+        <div class="card c5" @click="goOrders('delivering')"><b>{{dash.stats.delivering}}</b><span>待交车</span></div>
+        <div class="card c6"><b>¥{{fmt(dash.stats.todayRevenue)}}</b><span>今日营收</span></div>
+        <div class="card c7"><b>¥{{fmt(dash.stats.monthRevenue)}}</b><span>本月营收</span></div>
+      </div>
+
+      <div class="panel">
+        <h3>🔔 交车提醒</h3>
+        <table v-if="dash.reminders.length">
+          <thead><tr><th>工单号</th><th>车牌</th><th>车主</th><th>联系电话</th><th>预计交车</th><th>提醒</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="r in dash.reminders" :key="r.id">
+              <td>{{r.order_no}}</td><td>{{r.plate_no}}</td><td>{{r.owner_name}}</td><td>{{r.owner_phone}}</td>
+              <td>{{r.expected_delivery_at || '-'}}</td>
+              <td><span class="tag" :class="r.hours_left<0?'tag-red':'tag-orange'">{{r.reason}}</span></td>
+              <td><button class="btn sm" @click="openOrder(r.id)">处理</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="empty">暂无交车提醒</p>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <h3>⏳ 待审批增项 <em class="badge" v-if="dash.pendingItems.length">{{dash.pendingItems.length}}</em></h3>
+          <table v-if="dash.pendingItems.length">
+            <thead><tr><th>工单</th><th>车牌</th><th>增项</th><th>工时费</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr v-for="i in dash.pendingItems" :key="i.id">
+                <td>{{i.order_no}}</td><td>{{i.plate_no}}</td><td>{{i.name}}</td><td>¥{{fmt(i.labor_price)}}</td>
+                <td>
+                  <button class="btn sm ok" @click="approveItem(i)">批准</button>
+                  <button class="btn sm danger" @click="rejectItem(i)">驳回</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="empty">暂无待审批增项</p>
+        </div>
+        <div class="panel">
+          <h3>⚠️ 低库存配件</h3>
+          <table v-if="dash.lowStockParts.length">
+            <thead><tr><th>编码</th><th>名称</th><th>库存</th><th>警戒值</th></tr></thead>
+            <tbody>
+              <tr v-for="p in dash.lowStockParts" :key="p.id">
+                <td>{{p.code}}</td><td>{{p.name}}</td>
+                <td><span class="tag tag-red">{{p.stock}} {{p.unit}}</span></td><td>{{p.warn_stock}}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="empty">库存充足</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 接待登记 ============ -->
+    <section v-if="view==='reception'">
+      <h2>车辆接待登记</h2>
+      <div class="panel">
+        <h3>选择车辆</h3>
+        <div class="row">
+          <input v-model="recep.vehicleQ" placeholder="搜索车牌 / 车主 / 电话" @input="searchVehicles" class="w240">
+          <button class="btn" @click="recep.showNewVehicle=!recep.showNewVehicle">＋ 新车建档</button>
+        </div>
+        <div v-if="recep.showNewVehicle" class="subform">
+          <div class="row">
+            <input v-model="recep.newVehicle.plate_no" placeholder="车牌号*">
+            <input v-model="recep.newVehicle.brand" placeholder="品牌*">
+            <input v-model="recep.newVehicle.model" placeholder="车型*">
+            <input v-model="recep.newVehicle.color" placeholder="颜色">
+          </div>
+          <div class="row">
+            <input v-model="recep.newVehicle.vin" placeholder="VIN码">
+            <input v-model="recep.newVehicle.owner_name" placeholder="车主姓名*">
+            <input v-model="recep.newVehicle.owner_phone" placeholder="联系电话*">
+            <button class="btn ok" @click="createVehicle">保存档案</button>
+          </div>
+        </div>
+        <table v-if="recep.vehicleList.length">
+          <thead><tr><th></th><th>车牌</th><th>品牌车型</th><th>车主</th><th>电话</th></tr></thead>
+          <tbody>
+            <tr v-for="v in recep.vehicleList" :key="v.id" :class="{sel: recep.form.vehicle_id===v.id}"
+                @click="recep.form.vehicle_id=v.id" style="cursor:pointer">
+              <td><input type="radio" :checked="recep.form.vehicle_id===v.id"></td>
+              <td>{{v.plate_no}}</td><td>{{v.brand}} {{v.model}}</td><td>{{v.owner_name}}</td><td>{{v.owner_phone}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h3>接待信息</h3>
+        <div class="row">
+          <label>进厂里程 <input type="number" v-model="recep.form.mileage" class="w120"> km</label>
+          <label>接待员 <input v-model="recep.form.receptionist" class="w120"></label>
+          <label>预计交车 <input type="datetime-local" v-model="recep.form.expected_delivery_at"></label>
+        </div>
+        <textarea v-model="recep.form.fault_desc" placeholder="故障描述 / 客户需求" rows="2"></textarea>
+        <textarea v-model="recep.form.remark" placeholder="备注" rows="1"></textarea>
+      </div>
+
+      <div class="panel">
+        <h3>预检维修项目 <button class="btn sm" @click="addRecepItem">＋ 添加项目</button></h3>
+        <table v-if="recep.form.items.length">
+          <thead><tr><th>项目名称</th><th>类别</th><th>工时费(元)</th><th>工时(h)</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="(it,idx) in recep.form.items" :key="idx">
+              <td><input v-model="it.name" placeholder="如：更换机油机滤"></td>
+              <td><select v-model="it.category">
+                <option v-for="c in itemCategories" :key="c">{{c}}</option>
+              </select></td>
+              <td><input type="number" v-model="it.labor_price" class="w100"></td>
+              <td><input type="number" v-model="it.hours" class="w80"></td>
+              <td><button class="btn sm danger" @click="recep.form.items.splice(idx,1)">删除</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="empty">暂未添加项目，可稍后在建单后补充</p>
+        <div class="actions">
+          <button class="btn primary lg" @click="submitReception">✔ 提交登记（生成工单）</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 工单列表 ============ -->
+    <section v-if="view==='orders'">
+      <h2>维修工单</h2>
+      <div class="tabs">
+        <a v-for="t in statusTabs" :key="t.key" :class="{active: ordersFilter.status===t.key}"
+           @click="ordersFilter.status=t.key; loadOrders()">{{t.label}}</a>
+      </div>
+      <div class="row">
+        <input v-model="ordersFilter.q" placeholder="搜索工单号 / 车牌 / 车主" class="w240" @input="loadOrders">
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>工单号</th><th>车牌</th><th>车型</th><th>车主</th><th>故障描述</th><th>状态</th><th>预计交车</th><th>登记时间</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="o in orders" :key="o.id">
+              <td>{{o.order_no}}</td><td>{{o.plate_no}}</td><td>{{o.brand}} {{o.model}}</td><td>{{o.owner_name}}</td>
+              <td class="ellipsis" :title="o.fault_desc">{{o.fault_desc}}</td>
+              <td>
+                <span class="tag" :class="'st-'+o.status">{{statusLabel(o.status)}}</span>
+                <em v-if="o.pending_items" class="badge" title="有待审批增项">{{o.pending_items}}</em>
+              </td>
+              <td>{{o.expected_delivery_at || '-'}}</td><td>{{o.created_at}}</td>
+              <td><button class="btn sm" @click="openOrder(o.id)">详情</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="!orders.length" class="empty">暂无工单</p>
+      </div>
+    </section>
+
+    <!-- ============ 配件库存 ============ -->
+    <section v-if="view==='parts'">
+      <h2>配件库存</h2>
+      <div class="panel">
+        <h3>＋ 新增配件</h3>
+        <div class="row">
+          <input v-model="partForm.code" placeholder="编码*">
+          <input v-model="partForm.name" placeholder="名称*">
+          <input v-model="partForm.category" placeholder="分类">
+          <input v-model="partForm.unit" placeholder="单位" class="w80">
+          <input type="number" v-model="partForm.price" placeholder="单价" class="w100">
+          <input type="number" v-model="partForm.stock" placeholder="库存" class="w80">
+          <input type="number" v-model="partForm.warn_stock" placeholder="警戒值" class="w80">
+          <button class="btn ok" @click="createPart">保存</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>编码</th><th>名称</th><th>分类</th><th>单价</th><th>库存</th><th>警戒值</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr v-for="p in parts" :key="p.id" :class="{'row-low': p.low}">
+              <td>{{p.code}}</td><td>{{p.name}}</td><td>{{p.category}}</td><td>¥{{fmt(p.price)}}</td>
+              <td><span class="tag" :class="p.low?'tag-red':'tag-green'">{{p.stock}} {{p.unit}}</span></td>
+              <td>{{p.warn_stock}}</td>
+              <td>
+                <input type="number" v-model="restockQty[p.id]" class="w80" placeholder="数量">
+                <button class="btn sm" @click="restock(p)">入库</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 车辆档案 ============ -->
+    <section v-if="view==='vehicles'">
+      <h2>车辆档案</h2>
+      <div class="row"><input v-model="vehicleQ" placeholder="搜索车牌 / 车主 / 电话" class="w240" @input="loadVehicles"></div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>车牌</th><th>品牌</th><th>车型</th><th>VIN</th><th>颜色</th><th>车主</th><th>电话</th><th>建档时间</th></tr></thead>
+          <tbody>
+            <tr v-for="v in vehicles" :key="v.id">
+              <td>{{v.plate_no}}</td><td>{{v.brand}}</td><td>{{v.model}}</td><td>{{v.vin}}</td>
+              <td>{{v.color}}</td><td>{{v.owner_name}}</td><td>{{v.owner_phone}}</td><td>{{v.created_at}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 技师管理 ============ -->
+    <section v-if="view==='technicians'">
+      <h2>技师管理</h2>
+      <div class="panel">
+        <div class="row">
+          <input v-model="techForm.name" placeholder="姓名*">
+          <input v-model="techForm.phone" placeholder="电话">
+          <input v-model="techForm.specialty" placeholder="专长（如：发动机/电气）">
+          <button class="btn ok" @click="createTech">＋ 添加技师</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>姓名</th><th>电话</th><th>专长</th><th>在修任务</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr v-for="t in technicians" :key="t.id">
+              <td>{{t.name}}</td><td>{{t.phone}}</td><td>{{t.specialty}}</td><td>{{t.active_jobs}}</td>
+              <td><span class="tag" :class="t.active_jobs?'tag-orange':'tag-green'">{{t.active_jobs?'维修中':'空闲'}}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 结算记录 ============ -->
+    <section v-if="view==='settlements'">
+      <h2>结算记录</h2>
+      <div class="panel">
+        <table>
+          <thead><tr><th>工单号</th><th>车牌</th><th>车主</th><th>工时费</th><th>配件费</th><th>优惠</th><th>实收</th><th>支付方式</th><th>结算时间</th></tr></thead>
+          <tbody>
+            <tr v-for="s in settlements" :key="s.id">
+              <td>{{s.order_no}}</td><td>{{s.plate_no}}</td><td>{{s.owner_name}}</td>
+              <td>¥{{fmt(s.items_amount)}}</td><td>¥{{fmt(s.parts_amount)}}</td>
+              <td>-¥{{fmt(s.discount)}}</td><td><b>¥{{fmt(s.total_amount)}}</b></td>
+              <td>{{s.pay_method}}</td><td>{{s.paid_at}}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="!settlements.length" class="empty">暂无结算记录</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ 工单详情弹窗 ============ -->
+  <div class="modal-mask" v-if="detail" @click.self="closeDetail">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <b>{{detail.order.order_no}}</b>
+          <span class="tag" :class="'st-'+detail.order.status">{{statusLabel(detail.order.status)}}</span>
+        </div>
+        <button class="close" @click="closeDetail">✕</button>
+      </div>
+
+      <div class="kv">
+        <span>🚙 {{detail.order.plate_no}} · {{detail.order.brand}} {{detail.order.model}}</span>
+        <span>👤 {{detail.order.owner_name}} {{detail.order.owner_phone}}</span>
+        <span>📏 里程 {{detail.order.mileage}}km</span>
+        <span>🕐 预计交车 {{detail.order.expected_delivery_at || '-'}}</span>
+      </div>
+      <p class="fault">故障描述：{{detail.order.fault_desc || '无'}}　<span v-if="detail.order.remark">备注：{{detail.order.remark}}</span></p>
+
+      <!-- 状态操作条 -->
+      <div class="flow">
+        <button v-if="['reception','repairing'].includes(detail.order.status)" class="btn primary" @click="showDispatch=true">🔧 派工</button>
+        <button v-if="detail.order.status==='repairing'" class="btn primary" @click="finishRepair">✅ 完工申请</button>
+        <button v-if="detail.order.status==='qc'" class="btn primary" @click="showQC=true">🔍 完工质检</button>
+        <button v-if="detail.order.status==='settling'" class="btn primary" @click="showSettle=true">💰 结算</button>
+        <button v-if="detail.order.status==='delivering'" class="btn primary" @click="deliver">🤝 确认交车</button>
+        <span v-if="detail.order.status==='done'" class="tag tag-green">已于 {{detail.order.delivered_at}} 交车</span>
+      </div>
+
+      <!-- 维修项目 -->
+      <div class="panel">
+        <h3>维修项目 <button v-if="canEditOrder" class="btn sm" @click="showAddItem=true">＋ 添加项目/增项</button></h3>
+        <table>
+          <thead><tr><th>项目</th><th>类别</th><th>工时费</th><th>类型</th><th>审批</th><th>状态</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="i in detail.items" :key="i.id">
+              <td>{{i.name}}</td><td>{{i.category}}</td><td>¥{{fmt(i.labor_price)}}</td>
+              <td><span class="tag" :class="i.is_additional?'tag-purple':'tag-blue'">{{i.is_additional?'增项':'初始项'}}</span></td>
+              <td>
+                <span v-if="i.approval_status==='none'" class="muted">-</span>
+                <span v-else class="tag" :class="apprClass(i.approval_status)">{{apprLabel(i.approval_status)}}</span>
+              </td>
+              <td><span class="tag" :class="'it-'+i.status">{{itemStatusLabel(i.status)}}</span></td>
+              <td>
+                <template v-if="i.approval_status==='pending'">
+                  <button class="btn sm ok" @click="approveItem(i, true)">批准</button>
+                  <button class="btn sm danger" @click="rejectItem(i, true)">驳回</button>
+                </template>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 派工记录 -->
+      <div class="panel">
+        <h3>派工记录</h3>
+        <table v-if="detail.dispatches.length">
+          <thead><tr><th>技师</th><th>关联项目</th><th>备注</th><th>派工时间</th><th>状态</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="d in detail.dispatches" :key="d.id">
+              <td>{{d.technician_name}}</td><td>{{d.item_name || '整单'}}</td><td>{{d.note}}</td>
+              <td>{{d.dispatched_at}}</td>
+              <td><span class="tag" :class="d.status==='done'?'tag-green':'tag-orange'">{{d.status==='done'?'已完工':'进行中'}}</span></td>
+              <td><button v-if="d.status==='assigned'" class="btn sm" @click="finishDispatch(d)">完工</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="empty">尚未派工</p>
+      </div>
+
+      <!-- 配件领用 -->
+      <div class="panel">
+        <h3>配件领用 <button v-if="canEditOrder" class="btn sm" @click="showUsage=true">＋ 领用配件</button></h3>
+        <table v-if="detail.usages.length">
+          <thead><tr><th>配件</th><th>数量</th><th>单价</th><th>小计</th><th>领用人</th><th>状态</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="u in detail.usages" :key="u.id">
+              <td>{{u.part_name}} ({{u.part_code}})</td><td>{{u.quantity}} {{u.unit}}</td>
+              <td>¥{{fmt(u.unit_price)}}</td><td>¥{{fmt(u.quantity*u.unit_price)}}</td><td>{{u.issued_by}}</td>
+              <td><span class="tag" :class="u.status==='issued'?'tag-blue':'tag-gray'">{{u.status==='issued'?'已领用':'已退回'}}</span></td>
+              <td><button v-if="u.status==='issued' && canEditOrder" class="btn sm danger" @click="returnUsage(u)">退回</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="empty">暂未领用配件</p>
+      </div>
+
+      <!-- 质检 & 费用 -->
+      <div class="grid2">
+        <div class="panel">
+          <h3>质检记录</h3>
+          <table v-if="detail.qcs.length">
+            <thead><tr><th>质检员</th><th>结果</th><th>说明</th><th>时间</th></tr></thead>
+            <tbody>
+              <tr v-for="qc in detail.qcs" :key="qc.id">
+                <td>{{qc.inspector}}</td>
+                <td><span class="tag" :class="qc.result==='pass'?'tag-green':'tag-red'">{{qc.result==='pass'?'合格':'不合格'}}</span></td>
+                <td>{{qc.notes}}</td><td>{{qc.created_at}}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="empty">暂无质检记录</p>
+        </div>
+        <div class="panel">
+          <h3>费用明细</h3>
+          <div class="bill">
+            <p><span>工时费合计</span><b>¥{{fmt(detail.itemsAmount)}}</b></p>
+            <p><span>配件费合计</span><b>¥{{fmt(detail.partsAmount)}}</b></p>
+            <template v-if="detail.settlement">
+              <p><span>优惠</span><b>-¥{{fmt(detail.settlement.discount)}}</b></p>
+              <p class="total"><span>实收（{{detail.settlement.pay_method}}）</span><b>¥{{fmt(detail.settlement.total_amount)}}</b></p>
+              <p class="muted">结算时间 {{detail.settlement.paid_at}}</p>
+            </template>
+            <p v-else class="total"><span>预估合计</span><b>¥{{fmt(detail.itemsAmount + detail.partsAmount)}}</b></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 子表单：派工 -->
+      <div class="subform" v-if="showDispatch">
+        <h4>🔧 维修派工</h4>
+        <div class="row">
+          <select v-model="dispatchForm.technician_id">
+            <option value="">选择技师</option>
+            <option v-for="t in technicians" :key="t.id" :value="t.id">
+              {{t.name}}（{{t.specialty}}）{{t.active_jobs ? '·在修'+t.active_jobs+'单' : '·空闲'}}
+            </option>
+          </select>
+          <select v-model="dispatchForm.item_id">
+            <option :value="null">整单（不指定项目）</option>
+            <option v-for="i in detail.items.filter(x=>x.status!=='done' && x.approval_status!=='rejected')" :key="i.id" :value="i.id">{{i.name}}</option>
+          </select>
+          <input v-model="dispatchForm.note" placeholder="派工备注">
+          <button class="btn ok" @click="submitDispatch">确认派工</button>
+          <button class="btn" @click="showDispatch=false">取消</button>
+        </div>
+      </div>
+
+      <!-- 子表单：添加项目 -->
+      <div class="subform" v-if="showAddItem">
+        <h4>＋ 添加维修项目</h4>
+        <div class="row">
+          <input v-model="itemForm.name" placeholder="项目名称*">
+          <select v-model="itemForm.category"><option v-for="c in itemCategories" :key="c">{{c}}</option></select>
+          <input type="number" v-model="itemForm.labor_price" placeholder="工时费" class="w100">
+          <label><input type="checkbox" v-model="itemForm.is_additional"> 增项（需审批）</label>
+          <button class="btn ok" @click="submitItem">保存</button>
+          <button class="btn" @click="showAddItem=false">取消</button>
+        </div>
+      </div>
+
+      <!-- 子表单：领用配件 -->
+      <div class="subform" v-if="showUsage">
+        <h4>🔩 配件领用</h4>
+        <div class="row">
+          <select v-model="usageForm.part_id">
+            <option value="">选择配件</option>
+            <option v-for="p in parts" :key="p.id" :value="p.id">{{p.name}}（库存{{p.stock}}{{p.unit}} ¥{{fmt(p.price)}}）</option>
+          </select>
+          <input type="number" v-model="usageForm.quantity" placeholder="数量" class="w80">
+          <input v-model="usageForm.issued_by" placeholder="领用人" class="w120">
+          <button class="btn ok" @click="submitUsage">确认领用</button>
+          <button class="btn" @click="showUsage=false">取消</button>
+        </div>
+      </div>
+
+      <!-- 子表单：质检 -->
+      <div class="subform" v-if="showQC">
+        <h4>🔍 完工质检</h4>
+        <div class="row">
+          <input v-model="qcForm.inspector" placeholder="质检员*">
+          <label><input type="radio" value="pass" v-model="qcForm.result"> 合格</label>
+          <label><input type="radio" value="fail" v-model="qcForm.result"> 不合格（返修）</label>
+          <input v-model="qcForm.notes" placeholder="质检说明">
+          <button class="btn ok" @click="submitQC">提交质检</button>
+          <button class="btn" @click="showQC=false">取消</button>
+        </div>
+      </div>
+
+      <!-- 子表单：结算 -->
+      <div class="subform" v-if="showSettle">
+        <h4>💰 结算收银</h4>
+        <p>工时费 ¥{{fmt(detail.itemsAmount)}} ＋ 配件费 ¥{{fmt(detail.partsAmount)}}</p>
+        <div class="row">
+          <label>优惠金额 <input type="number" v-model="settleForm.discount" class="w100"></label>
+          <select v-model="settleForm.pay_method">
+            <option>现金</option><option>微信</option><option>支付宝</option><option>银行卡</option><option>挂账</option>
+          </select>
+          <b>应收：¥{{fmt(Math.max(0, detail.itemsAmount + detail.partsAmount - (Number(settleForm.discount)||0)))}}</b>
+          <button class="btn ok" @click="submitSettle">确认收款</button>
+          <button class="btn" @click="showSettle=false">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" v-if="toast.msg" :class="toast.type">{{toast.msg}}</div>
+</div>
+
+<script src="vendor/vue.global.prod.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
