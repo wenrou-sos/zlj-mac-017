@@ -1,12 +1,20 @@
 // 数据库层：sql.js (SQLite WASM) + 文件持久化
+// 多实例安全：写入前加文件锁并重新加载磁盘最新数据，落盘采用 临时文件+rename 原子替换，
+// 避免多个进程打开同一数据库文件时互相覆盖数据。
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DB_FILE = path.join(DATA_DIR, 'shop.sqlite');
+const LOCK_FILE = DB_FILE + '.lock';
+const TMP_FILE = DB_FILE + '.' + process.pid + '.tmp';
 
+let SQL = null;
 let db = null;
+let lastMtime = 0;
+let lastSize = -1;
+let lockDepth = 0; // 进程内可重入锁（事务内嵌套 run 不会重复加锁）
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS vehicles (
@@ -114,28 +122,90 @@ CREATE TABLE IF NOT EXISTS settlements (
 );
 `;
 
-async function init() {
-  const SQL = await initSqlJs();
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+// ---------- 文件锁 ----------
+function acquireLock() {
+  if (lockDepth > 0) { lockDepth++; return; } // 本进程已持有（事务重入）
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    try {
+      fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: 'wx' });
+      lockDepth = 1;
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // 清理超过15秒的残留锁（持锁进程已崩溃的情况）
+      try {
+        if (Date.now() - fs.statSync(LOCK_FILE).mtimeMs > 15000) fs.unlinkSync(LOCK_FILE);
+      } catch (_) { /* 锁可能刚被释放 */ }
+      if (Date.now() > deadline) throw new Error('数据库正忙，请稍后重试');
+      const until = Date.now() + 5; // 短暂自旋等待
+      while (Date.now() < until) { /* busy wait */ }
+    }
+  }
+}
 
+function releaseLock() {
+  if (lockDepth === 0) return;
+  lockDepth--;
+  if (lockDepth === 0) {
+    try { fs.unlinkSync(LOCK_FILE); } catch (_) { /* 已被清理 */ }
+  }
+}
+
+process.on('exit', () => { try { if (lockDepth > 0) fs.unlinkSync(LOCK_FILE); } catch (_) {} });
+
+// ---------- 加载 / 保存 ----------
+function noteFileState() {
+  try {
+    const st = fs.statSync(DB_FILE);
+    lastMtime = st.mtimeMs;
+    lastSize = st.size;
+  } catch (_) {
+    lastMtime = 0;
+    lastSize = -1;
+  }
+}
+
+function loadFromDisk() {
+  if (db) { try { db.close(); } catch (_) {} }
   if (fs.existsSync(DB_FILE)) {
     db = new SQL.Database(fs.readFileSync(DB_FILE));
   } else {
     db = new SQL.Database();
   }
   db.run('PRAGMA foreign_keys = ON;');
+  noteFileState();
+}
+
+// 磁盘文件被其他实例更新时重新加载
+function refreshIfChanged() {
+  if (lockDepth > 0) return; // 事务/写锁内不重载，保护未提交修改
+  try {
+    const st = fs.statSync(DB_FILE);
+    if (st.mtimeMs !== lastMtime || st.size !== lastSize) loadFromDisk();
+  } catch (_) { /* 文件不存在则保持内存库 */ }
+}
+
+// 原子落盘：临时文件 + rename，读取方不会看到写了一半的文件
+function save() {
+  const data = db.export();
+  fs.writeFileSync(TMP_FILE, Buffer.from(data));
+  fs.renameSync(TMP_FILE, DB_FILE);
+  noteFileState();
+}
+
+async function init() {
+  SQL = await initSqlJs();
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  loadFromDisk();
   db.run(SCHEMA);
   save();
   return db;
 }
 
-function save() {
-  const data = db.export();
-  fs.writeFileSync(DB_FILE, Buffer.from(data));
-}
-
-// ---- 查询助手 ----
+// ---------- 查询 ----------
 function all(sql, params = []) {
+  refreshIfChanged();
   const stmt = db.prepare(sql);
   stmt.bind(params);
   const rows = [];
@@ -149,30 +219,47 @@ function get(sql, params = []) {
   return rows.length ? rows[0] : null;
 }
 
-let inTx = false; // sql.js 的 export() 会结束事务，事务内禁止 save()
+// ---------- 写入 ----------
+function lastInsertId() {
+  return db.exec('SELECT last_insert_rowid() AS id')[0].values[0][0];
+}
 
+// 单条写入：加锁 -> 重载最新数据 -> 执行 -> 落盘
 function run(sql, params = []) {
-  db.run(sql, params);
-  // 注意：sql.js 的 export() 会把 last_insert_rowid 重置为 0，必须先取 ID 再 save()
-  const id = db.exec('SELECT last_insert_rowid() AS id')[0].values[0][0];
-  if (!inTx) save();
-  return id;
+  if (lockDepth > 0) { // 事务内：只执行，由 tx 统一落盘
+    db.run(sql, params);
+    return lastInsertId();
+  }
+  acquireLock();
+  try {
+    loadFromDisk(); // 先合并其他实例的写入，避免覆盖
+    db.run(sql, params);
+    const id = lastInsertId();
+    save();
+    return id;
+  } finally {
+    releaseLock();
+  }
 }
 
 // 事务：多步写入后统一持久化
 function tx(fn) {
-  db.run('BEGIN');
-  inTx = true;
+  acquireLock();
   try {
-    const result = fn();
-    db.run('COMMIT');
-    inTx = false;
+    loadFromDisk(); // 事务开始前合并其他实例的写入
+    db.run('BEGIN');
+    let result;
+    try {
+      result = fn();
+      db.run('COMMIT');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (_) { /* 事务可能已结束 */ }
+      throw e;
+    }
     save();
     return result;
-  } catch (e) {
-    inTx = false;
-    try { db.run('ROLLBACK'); } catch (_) { /* 事务可能已结束 */ }
-    throw e;
+  } finally {
+    releaseLock();
   }
 }
 

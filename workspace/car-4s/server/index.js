@@ -29,11 +29,16 @@ function getOrderOr404(id) {
   return o;
 }
 
+// 生成工单号（必须在写事务/文件锁内调用，否则多实例会撞号）
 function genOrderNo() {
   const today = new Date();
   const ymd = today.toISOString().slice(0, 10).replace(/-/g, '');
   const row = db.get(`SELECT COUNT(*) AS c FROM repair_orders WHERE order_no LIKE 'WX' || ? || '%'`, [ymd]);
-  return `WX${ymd}${String(row.c + 1).padStart(3, '0')}`;
+  let n = row.c + 1, no;
+  do {
+    no = `WX${ymd}${String(n++).padStart(3, '0')}`;
+  } while (db.get('SELECT id FROM repair_orders WHERE order_no = ?', [no]));
+  return no;
 }
 
 // ============ 工作台统计 + 交车提醒 ============
@@ -157,8 +162,9 @@ app.post('/api/orders', h((req, res) => {
   const { vehicle_id, mileage = 0, fault_desc = '', receptionist = '', expected_delivery_at = '', remark = '', items = [] } = req.body;
   if (!vehicle_id) throw new Error('请选择车辆');
   if (!db.get('SELECT id FROM vehicles WHERE id = ?', [vehicle_id])) throw new Error('车辆不存在');
-  const orderNo = genOrderNo();
+  // 单号生成放在事务内：持锁且已加载最新数据，多实例并发不会撞号
   const id = db.tx(() => {
+    const orderNo = genOrderNo();
     const oid = db.run(`INSERT INTO repair_orders(order_no,vehicle_id,mileage,fault_desc,receptionist,expected_delivery_at,remark)
       VALUES (?,?,?,?,?,?,?)`, [orderNo, vehicle_id, Number(mileage), fault_desc, receptionist, expected_delivery_at, remark]);
     items.forEach(it => {
@@ -324,7 +330,13 @@ app.post('/api/orders/:id/qc', h((req, res) => {
   db.tx(() => {
     db.run('INSERT INTO quality_checks(order_id,inspector,result,notes) VALUES (?,?,?,?)',
       [order.id, inspector, result, notes]);
-    db.run('UPDATE repair_orders SET status = ? WHERE id = ?', [result === 'pass' ? 'settling' : 'repairing', order.id]);
+    if (result === 'pass') {
+      db.run(`UPDATE repair_orders SET status='settling' WHERE id = ?`, [order.id]);
+    } else {
+      // 质检不合格 -> 返修：工单退回维修中，项目重置为待施工以便重新派工
+      db.run(`UPDATE repair_orders SET status='repairing' WHERE id = ?`, [order.id]);
+      db.run(`UPDATE repair_items SET status='pending' WHERE order_id = ? AND approval_status != 'rejected'`, [order.id]);
+    }
   });
   touchOrder(order.id);
   res.json(getOrderOr404(order.id));
