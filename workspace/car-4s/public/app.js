@@ -33,7 +33,11 @@ createApp({
       toastTimer = setTimeout(() => (toast.msg = ''), 2600);
     };
     const run = async (fn, okMsg) => {
-      try { await fn(); if (okMsg) showToast(okMsg); }
+      try {
+        const result = await fn();
+        // fn 返回 false 表示操作被前置校验拦下（已给出提示），不再弹成功提示
+        if (result !== false && okMsg) showToast(okMsg);
+      }
       catch (e) { showToast(e.message, 'err'); }
     };
 
@@ -159,14 +163,14 @@ createApp({
     const dispatchForm = reactive({ technician_id: '', item_id: null, note: '' });
     const submitDispatch = () => run(async () => {
       if (!dispatchForm.technician_id) throw new Error('请选择技师');
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/orders/${detail.value.order.id}/dispatch`, 'POST', dispatchForm);
       Object.assign(dispatchForm, { technician_id: '', item_id: null, note: '' });
       showDispatch.value = false; await refreshDetail(); loadTechs();
     }, '派工成功');
 
     const finishDispatch = d => run(async () => {
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/dispatches/${d.id}/finish`, 'POST'); await refreshDetail(); loadTechs();
     }, '任务已完工');
 
@@ -174,19 +178,19 @@ createApp({
     const itemCategories = ['机修', '电气', '保养', '制动', '钣喷', '车身', '其他'];
     const itemForm = reactive({ name: '', category: '机修', labor_price: 0, hours: 1, is_additional: false });
     const submitItem = () => run(async () => {
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/orders/${detail.value.order.id}/items`, 'POST', itemForm);
       Object.assign(itemForm, { name: '', category: '机修', labor_price: 0, hours: 1, is_additional: false });
       showAddItem.value = false; await refreshDetail();
     }, '项目已添加');
 
     const approveItem = (i, inDetail) => run(async () => {
-      if (inDetail && !await preActionCheck()) return;
+      if (inDetail && !await preActionCheck()) return false;
       await api(`/api/items/${i.id}/approve`, 'POST');
       if (inDetail) await refreshDetail(); await loadDash(); if (view.value === 'orders') loadOrders();
     }, '已批准增项');
     const rejectItem = (i, inDetail) => run(async () => {
-      if (inDetail && !await preActionCheck()) return;
+      if (inDetail && !await preActionCheck()) return false;
       await api(`/api/items/${i.id}/reject`, 'POST');
       if (inDetail) await refreshDetail(); await loadDash(); if (view.value === 'orders') loadOrders();
     }, '已驳回增项');
@@ -195,25 +199,25 @@ createApp({
     const usageForm = reactive({ part_id: '', quantity: 1, issued_by: '' });
     const submitUsage = () => run(async () => {
       if (!usageForm.part_id) throw new Error('请选择配件');
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/orders/${detail.value.order.id}/parts`, 'POST', usageForm);
       Object.assign(usageForm, { part_id: '', quantity: 1, issued_by: '' });
       showUsage.value = false; await refreshDetail(); loadParts();
     }, '领用成功');
     const returnUsage = u => run(async () => {
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/usages/${u.id}/return`, 'POST'); await refreshDetail(); loadParts();
     }, '已退回入库');
 
     // 完工 / 质检 / 结算 / 交车
     const finishRepair = () => run(async () => {
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/orders/${detail.value.order.id}/finish`, 'POST'); await refreshDetail();
     }, '已转入待质检');
 
     const qcForm = reactive({ inspector: '', result: 'pass', notes: '' });
     const submitQC = () => run(async () => {
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/orders/${detail.value.order.id}/qc`, 'POST', qcForm);
       Object.assign(qcForm, { inspector: '', result: 'pass', notes: '' });
       showQC.value = false; await refreshDetail();
@@ -221,14 +225,14 @@ createApp({
 
     const settleForm = reactive({ discount: 0, pay_method: '现金' });
     const submitSettle = () => run(async () => {
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/orders/${detail.value.order.id}/settle`, 'POST', settleForm);
       Object.assign(settleForm, { discount: 0, pay_method: '现金' });
       showSettle.value = false; await refreshDetail();
     }, '结算完成');
 
     const deliver = () => run(async () => {
-      if (!await preActionCheck()) return;
+      if (!await preActionCheck()) return false;
       await api(`/api/orders/${detail.value.order.id}/deliver`, 'POST'); await refreshDetail();
     }, '已交车，感谢惠顾！');
 
