@@ -328,6 +328,8 @@
         <div>
           <b>{{detail.order.order_no}}</b>
           <span class="tag" :class="'st-'+detail.order.status">{{statusLabel(detail.order.status)}}</span>
+          <span v-if="detailSync.error" class="tag tag-red">⚠ 网络异常，显示的是 {{detailSync.lastAt}} 的状态</span>
+          <span v-else class="sync-note">已同步 {{detailSync.lastAt}}</span>
         </div>
         <button class="close" @click="closeDetail">✕</button>
       </div>

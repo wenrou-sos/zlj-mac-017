@@ -93,6 +93,7 @@ textarea { width: 100%; margin-top: 8px; resize: vertical; }
 .modal { background: #f5f7fa; border-radius: 10px; width: 1080px; max-width: 96vw; padding: 20px 22px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 17px; }
 .modal-head .tag { margin-left: 10px; }
+.sync-note { color: #909399; font-size: 12px; margin-left: 10px; font-weight: 400; }
 .close { border: none; background: none; font-size: 18px; cursor: pointer; color: #909399; }
 .kv { display: flex; gap: 22px; flex-wrap: wrap; color: #606266; margin-bottom: 8px; }
 .fault { color: #606266; margin-bottom: 12px; }

@@ -19,8 +19,9 @@ const h = fn => (req, res) => {
 
 const ORDER_STATUS = ['reception', 'repairing', 'qc', 'settling', 'delivering', 'done'];
 
+// 更新工单的"最后变更时间"（毫秒精度，前端据此检测其他终端的改动）
 function touchOrder(id) {
-  db.run(`UPDATE repair_orders SET updated_at = datetime('now','localtime') WHERE id = ?`, [id]);
+  db.run(`UPDATE repair_orders SET updated_at = strftime('%Y-%m-%d %H:%M:%f','now','localtime') WHERE id = ?`, [id]);
 }
 
 function getOrderOr404(id) {

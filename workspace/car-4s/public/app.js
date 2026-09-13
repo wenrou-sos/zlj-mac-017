@@ -66,24 +66,107 @@ createApp({
     const canEditOrder = computed(() =>
       detail.value && ['reception', 'repairing'].includes(detail.value.order.status));
 
-    const openOrder = async id => {
-      detail.value = await api(`/api/orders/${id}`);
+    // 弹窗与服务端状态同步：轮询 + 操作前校验
+    // 注意：各子表单数据存放在独立的 reactive 对象中，刷新 detail 不会冲掉正在填写的内容
+    const detailSync = reactive({ error: false, lastAt: '' });
+    let detailTimer = null;
+
+    const now = () => new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    const closeSubForms = () => {
       showDispatch.value = showAddItem.value = showUsage.value = showQC.value = showSettle.value = false;
-      loadParts(); loadTechs();
     };
-    const closeDetail = () => { detail.value = null; loadDash(); loadOrders(); };
-    const refreshDetail = async () => { detail.value = await api(`/api/orders/${detail.value.order.id}`); };
+    // 状态变化后只收起与新状态不符的子表单，符合的保持打开（内容不丢）
+    const reconcileSubForms = status => {
+      if (!['reception', 'repairing'].includes(status)) {
+        showDispatch.value = showAddItem.value = showUsage.value = false;
+      }
+      if (status !== 'qc') showQC.value = false;
+      if (status !== 'settling') showSettle.value = false;
+    };
+    const applyFresh = fresh => {
+      detail.value = fresh;
+      detailSync.error = false;
+      detailSync.lastAt = now();
+    };
+    const fetchFresh = () => api(`/api/orders/${detail.value.order.id}`);
+
+    // 静默轮询：其他终端改动后自动跟上
+    const silentRefresh = async () => {
+      if (!detail.value) return;
+      try {
+        const fresh = await fetchFresh();
+        const statusChanged = fresh.order.status !== detail.value.order.status;
+        const changed = fresh.order.updated_at !== detail.value.order.updated_at;
+        if (statusChanged) {
+          applyFresh(fresh);
+          reconcileSubForms(fresh.order.status);
+          showToast(`工单已被其他终端推进为「${statusLabel(fresh.order.status)}」，可执行操作已更新`, 'err');
+        } else if (changed) {
+          applyFresh(fresh); // 静默更新（新增的项目/领料等会直接显示）
+        } else {
+          detailSync.error = false;
+          detailSync.lastAt = now();
+        }
+      } catch (e) {
+        detailSync.error = true; // 网络异常：保留当前展示，仅做标记
+      }
+    };
+
+    const startDetailSync = () => {
+      stopDetailSync();
+      detailSync.error = false;
+      detailSync.lastAt = now();
+      detailTimer = setInterval(silentRefresh, 5000);
+    };
+    const stopDetailSync = () => {
+      if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+    };
+
+    // 操作前校验：状态已被其他终端改变时，刷新弹窗并中止本次操作
+    const preActionCheck = async () => {
+      if (!detail.value) return true;
+      try {
+        const fresh = await fetchFresh();
+        if (fresh.order.updated_at === detail.value.order.updated_at) return true;
+        const statusChanged = fresh.order.status !== detail.value.order.status;
+        applyFresh(fresh);
+        reconcileSubForms(fresh.order.status);
+        if (statusChanged) {
+          showToast(`这张工单已经进入「${statusLabel(fresh.order.status)}」，请按最新状态操作`, 'err');
+          return false;
+        }
+        return true; // 仅内容有更新（状态未变），刷新后放行
+      } catch (e) {
+        showToast('网络异常，无法确认工单最新状态，请稍后重试', 'err');
+        return false;
+      }
+    };
+
+    const openOrder = id => run(async () => {
+      detail.value = await api(`/api/orders/${id}`);
+      closeSubForms();
+      loadParts(); loadTechs();
+      startDetailSync();
+    });
+    const closeDetail = () => {
+      stopDetailSync();
+      detail.value = null;
+      loadDash(); loadOrders();
+    };
+    const refreshDetail = async () => { applyFresh(await fetchFresh()); };
 
     // 派工
     const dispatchForm = reactive({ technician_id: '', item_id: null, note: '' });
     const submitDispatch = () => run(async () => {
       if (!dispatchForm.technician_id) throw new Error('请选择技师');
+      if (!await preActionCheck()) return;
       await api(`/api/orders/${detail.value.order.id}/dispatch`, 'POST', dispatchForm);
       Object.assign(dispatchForm, { technician_id: '', item_id: null, note: '' });
       showDispatch.value = false; await refreshDetail(); loadTechs();
     }, '派工成功');
 
     const finishDispatch = d => run(async () => {
+      if (!await preActionCheck()) return;
       await api(`/api/dispatches/${d.id}/finish`, 'POST'); await refreshDetail(); loadTechs();
     }, '任务已完工');
 
@@ -91,16 +174,19 @@ createApp({
     const itemCategories = ['机修', '电气', '保养', '制动', '钣喷', '车身', '其他'];
     const itemForm = reactive({ name: '', category: '机修', labor_price: 0, hours: 1, is_additional: false });
     const submitItem = () => run(async () => {
+      if (!await preActionCheck()) return;
       await api(`/api/orders/${detail.value.order.id}/items`, 'POST', itemForm);
       Object.assign(itemForm, { name: '', category: '机修', labor_price: 0, hours: 1, is_additional: false });
       showAddItem.value = false; await refreshDetail();
     }, '项目已添加');
 
     const approveItem = (i, inDetail) => run(async () => {
+      if (inDetail && !await preActionCheck()) return;
       await api(`/api/items/${i.id}/approve`, 'POST');
       if (inDetail) await refreshDetail(); await loadDash(); if (view.value === 'orders') loadOrders();
     }, '已批准增项');
     const rejectItem = (i, inDetail) => run(async () => {
+      if (inDetail && !await preActionCheck()) return;
       await api(`/api/items/${i.id}/reject`, 'POST');
       if (inDetail) await refreshDetail(); await loadDash(); if (view.value === 'orders') loadOrders();
     }, '已驳回增项');
@@ -109,21 +195,25 @@ createApp({
     const usageForm = reactive({ part_id: '', quantity: 1, issued_by: '' });
     const submitUsage = () => run(async () => {
       if (!usageForm.part_id) throw new Error('请选择配件');
+      if (!await preActionCheck()) return;
       await api(`/api/orders/${detail.value.order.id}/parts`, 'POST', usageForm);
       Object.assign(usageForm, { part_id: '', quantity: 1, issued_by: '' });
       showUsage.value = false; await refreshDetail(); loadParts();
     }, '领用成功');
     const returnUsage = u => run(async () => {
+      if (!await preActionCheck()) return;
       await api(`/api/usages/${u.id}/return`, 'POST'); await refreshDetail(); loadParts();
     }, '已退回入库');
 
     // 完工 / 质检 / 结算 / 交车
     const finishRepair = () => run(async () => {
+      if (!await preActionCheck()) return;
       await api(`/api/orders/${detail.value.order.id}/finish`, 'POST'); await refreshDetail();
     }, '已转入待质检');
 
     const qcForm = reactive({ inspector: '', result: 'pass', notes: '' });
     const submitQC = () => run(async () => {
+      if (!await preActionCheck()) return;
       await api(`/api/orders/${detail.value.order.id}/qc`, 'POST', qcForm);
       Object.assign(qcForm, { inspector: '', result: 'pass', notes: '' });
       showQC.value = false; await refreshDetail();
@@ -131,12 +221,14 @@ createApp({
 
     const settleForm = reactive({ discount: 0, pay_method: '现金' });
     const submitSettle = () => run(async () => {
+      if (!await preActionCheck()) return;
       await api(`/api/orders/${detail.value.order.id}/settle`, 'POST', settleForm);
       Object.assign(settleForm, { discount: 0, pay_method: '现金' });
       showSettle.value = false; await refreshDetail();
     }, '结算完成');
 
     const deliver = () => run(async () => {
+      if (!await preActionCheck()) return;
       await api(`/api/orders/${detail.value.order.id}/deliver`, 'POST'); await refreshDetail();
     }, '已交车，感谢惠顾！');
 
@@ -254,7 +346,7 @@ createApp({
       view, menus, go, toast, fmt,
       dash, badgeCount, goOrders,
       orders, ordersFilter, statusTabs, statusLabel, loadOrders,
-      detail, openOrder, closeDetail, canEditOrder,
+      detail, openOrder, closeDetail, canEditOrder, detailSync,
       showDispatch, showAddItem, showUsage, showQC, showSettle,
       dispatchForm, submitDispatch, finishDispatch,
       itemCategories, itemForm, submitItem, approveItem, rejectItem, apprLabel, apprClass, itemStatusLabel,
