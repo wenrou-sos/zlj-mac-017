@@ -132,7 +132,10 @@ app.get('/api/parts', h((req, res) => {
 app.post('/api/parts', h((req, res) => {
   const { code, name, category = '通用', unit = '件', price = 0, stock = 0, warn_stock = 5 } = req.body;
   if (!code || !name) throw new Error('请填写配件编码和名称');
-  if (db.get('SELECT id FROM parts WHERE code = ?', [code])) throw new Error('配件编码已存在');
+  if (Number(price) < 0) throw new Error('单价不能为负数');
+  if (Number(stock) < 0) throw new Error('库存不能为负数');
+  if (Number(warn_stock) < 0) throw new Error('警戒库存不能为负数');
+  if (db.get('SELECT id FROM parts WHERE code = ?', [code])) throw new Error(`配件编码 ${code} 已存在`);
   const id = db.run('INSERT INTO parts(code,name,category,unit,price,stock,warn_stock) VALUES (?,?,?,?,?,?,?)',
     [code, name, category, unit, Number(price), Number(stock), Number(warn_stock)]);
   res.json(db.get('SELECT * FROM parts WHERE id = ?', [id]));
@@ -154,6 +157,7 @@ app.put('/api/parts/:id', h((req, res) => {
   const { code, name, category = '通用', unit = '件', price = 0, warn_stock = 5 } = req.body;
   if (!code || !name) throw new Error('请填写配件编码和名称');
   if (Number(price) < 0) throw new Error('单价不能为负数');
+  if (Number(warn_stock) < 0) throw new Error('警戒库存不能为负数');
   const dup = db.get('SELECT id, name FROM parts WHERE code = ? AND id != ?', [code, p.id]);
   if (dup) throw new Error(`配件编码 ${code} 已被「${dup.name}」使用，不能重复`);
   db.run('UPDATE parts SET code=?, name=?, category=?, unit=?, price=?, warn_stock=? WHERE id=?',
@@ -222,7 +226,11 @@ app.get('/api/orders', h((req, res) => {
 app.post('/api/orders', h((req, res) => {
   const { vehicle_id, mileage = 0, fault_desc = '', receptionist = '', expected_delivery_at = '', remark = '', items = [] } = req.body;
   if (!vehicle_id) throw new Error('请选择车辆');
+  if (Number(mileage) < 0) throw new Error('进厂里程不能为负数');
   if (!db.get('SELECT id FROM vehicles WHERE id = ?', [vehicle_id])) throw new Error('车辆不存在');
+  items.forEach(it => {
+    if (it.name && Number(it.labor_price) < 0) throw new Error(`项目「${it.name}」工时费不能为负数`);
+  });
   // 单号生成放在事务内：持锁且已加载最新数据，多实例并发不会撞号
   const id = db.tx(() => {
     const orderNo = genOrderNo();
@@ -257,9 +265,9 @@ app.get('/api/orders/:id', h((req, res) => {
   const qcs = db.all('SELECT * FROM quality_checks WHERE order_id = ? ORDER BY id DESC', [order.id]);
   const settlement = db.get('SELECT * FROM settlements WHERE order_id = ?', [order.id]);
 
-  // 费用预估（已批准增项+普通项，未退回配件）
+  // 费用预估（普通项+已批准增项计入；待审批/已驳回增项不计，未退回配件计入）
   const itemsAmount = items
-    .filter(i => i.approval_status !== 'rejected')
+    .filter(i => i.approval_status === 'none' || i.approval_status === 'approved')
     .reduce((s, i) => s + i.labor_price, 0);
   const partsAmount = usages
     .filter(u => u.status === 'issued')
@@ -271,9 +279,12 @@ app.get('/api/orders/:id', h((req, res) => {
 // 添加维修项目（is_additional=1 时为增项，需审批）
 app.post('/api/orders/:id/items', h((req, res) => {
   const order = getOrderOr404(req.params.id);
-  if (['settling', 'delivering', 'done'].includes(order.status)) throw new Error('当前状态不可添加项目');
+  // 仅接待/维修中可追加；进入待质检后工单项目即冻结
+  if (!['reception', 'repairing'].includes(order.status)) throw new Error('当前状态不可添加项目（仅已接待/维修中可追加）');
   const { name, category = '机修', labor_price = 0, hours = 1, is_additional = 0 } = req.body;
   if (!name) throw new Error('请填写项目名称');
+  if (Number(labor_price) < 0) throw new Error('工时费不能为负数');
+  if (!(Number(hours) > 0)) throw new Error('工时必须大于0');
   const id = db.run(`INSERT INTO repair_items(order_id,name,category,labor_price,hours,is_additional,approval_status)
     VALUES (?,?,?,?,?,?,?)`,
     [order.id, name, category, Number(labor_price), Number(hours), is_additional ? 1 : 0, is_additional ? 'pending' : 'none']);
@@ -336,7 +347,8 @@ app.post('/api/dispatches/:id/finish', h((req, res) => {
 // 配件领用
 app.post('/api/orders/:id/parts', h((req, res) => {
   const order = getOrderOr404(req.params.id);
-  if (['settling', 'delivering', 'done'].includes(order.status)) throw new Error('当前状态不可领用配件');
+  // 仅接待/维修中可领用；待质检后领料即冻结，质检不合格返修后恢复
+  if (!['reception', 'repairing'].includes(order.status)) throw new Error('当前状态不可领用配件（仅已接待/维修中可领用）');
   const { part_id, quantity, issued_by = '' } = req.body;
   const qty = Number(quantity);
   if (!qty || qty <= 0) throw new Error('领用数量必须大于0');
@@ -409,8 +421,13 @@ app.post('/api/orders/:id/settle', h((req, res) => {
   if (order.status !== 'settling') throw new Error('该工单不在待结算状态');
   if (db.get('SELECT id FROM settlements WHERE order_id = ?', [order.id])) throw new Error('该工单已结算');
   const { discount = 0, pay_method = '现金' } = req.body;
+  if (Number(discount) < 0) throw new Error('优惠金额不能为负数');
+  // 未审批增项不计费也不允许带着结算（正常流程到不了这里，兜底防御）
+  const pending = db.get(`SELECT COUNT(*) c FROM repair_items WHERE order_id = ? AND approval_status = 'pending'`, [order.id]).c;
+  if (pending > 0) throw new Error(`还有 ${pending} 个增项未审批，请先批准或驳回再结算`);
+  // 仅计入：普通项 + 已批准增项；待审批/已驳回不计
   const itemsAmount = db.get(`SELECT COALESCE(SUM(labor_price),0) s FROM repair_items
-    WHERE order_id = ? AND approval_status != 'rejected'`, [order.id]).s;
+    WHERE order_id = ? AND approval_status IN ('none','approved')`, [order.id]).s;
   const partsAmount = db.get(`SELECT COALESCE(SUM(u.quantity * u.unit_price),0) s FROM part_usages u
     WHERE u.order_id = ? AND u.status = 'issued'`, [order.id]).s;
   const total = Math.max(0, itemsAmount + partsAmount - Number(discount));

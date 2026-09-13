@@ -120,7 +120,7 @@
       <div class="panel">
         <h3>接待信息</h3>
         <div class="row">
-          <label>进厂里程 <input type="number" v-model="recep.form.mileage" class="w120"> km</label>
+          <label>进厂里程 <input type="number" min="0" v-model="recep.form.mileage" class="w120"> km</label>
           <label>接待员 <input v-model="recep.form.receptionist" class="w120"></label>
           <label>预计交车 <input type="datetime-local" v-model="recep.form.expected_delivery_at"></label>
         </div>
@@ -138,8 +138,8 @@
               <td><select v-model="it.category">
                 <option v-for="c in itemCategories" :key="c">{{c}}</option>
               </select></td>
-              <td><input type="number" v-model="it.labor_price" class="w100"></td>
-              <td><input type="number" v-model="it.hours" class="w80"></td>
+              <td><input type="number" min="0" v-model="it.labor_price" class="w100"></td>
+              <td><input type="number" min="0" v-model="it.hours" class="w80"></td>
               <td><button class="btn sm danger" @click="recep.form.items.splice(idx,1)">删除</button></td>
             </tr>
           </tbody>
@@ -191,9 +191,9 @@
           <input v-model="partForm.name" placeholder="名称*">
           <input v-model="partForm.category" placeholder="分类">
           <input v-model="partForm.unit" placeholder="单位" class="w80">
-          <input type="number" v-model="partForm.price" placeholder="单价" class="w100">
-          <input type="number" v-model="partForm.stock" placeholder="库存" class="w80">
-          <input type="number" v-model="partForm.warn_stock" placeholder="警戒值" class="w80">
+          <input type="number" min="0" v-model="partForm.price" placeholder="单价" class="w100">
+          <input type="number" min="0" v-model="partForm.stock" placeholder="库存" class="w80">
+          <input type="number" min="0" v-model="partForm.warn_stock" placeholder="警戒值" class="w80">
           <button class="btn ok" @click="createPart">保存</button>
         </div>
       </div>
@@ -204,8 +204,8 @@
           <input v-model="partEdit.name" placeholder="名称*">
           <input v-model="partEdit.category" placeholder="分类">
           <input v-model="partEdit.unit" placeholder="单位" class="w80">
-          <label>单价 <input type="number" v-model="partEdit.price" class="w100"></label>
-          <label>警戒值 <input type="number" v-model="partEdit.warn_stock" class="w80"></label>
+          <label>单价 <input type="number" min="0" v-model="partEdit.price" class="w100"></label>
+          <label>警戒值 <input type="number" min="0" v-model="partEdit.warn_stock" class="w80"></label>
           <button class="btn ok" @click="savePart">保存修改</button>
           <button class="btn" @click="partEdit=null">取消</button>
         </div>
@@ -220,7 +220,7 @@
               <td><span class="tag" :class="p.low?'tag-red':'tag-green'">{{p.stock}} {{p.unit}}</span></td>
               <td>{{p.warn_stock}}</td>
               <td>
-                <input type="number" v-model="restockQty[p.id]" class="w80" placeholder="数量">
+                <input type="number" min="0" v-model="restockQty[p.id]" class="w80" placeholder="数量">
                 <button class="btn sm" @click="restock(p)">入库</button>
               </td>
               <td>
@@ -466,7 +466,7 @@
         <div class="row">
           <input v-model="itemForm.name" placeholder="项目名称*">
           <select v-model="itemForm.category"><option v-for="c in itemCategories" :key="c">{{c}}</option></select>
-          <input type="number" v-model="itemForm.labor_price" placeholder="工时费" class="w100">
+          <input type="number" min="0" v-model="itemForm.labor_price" placeholder="工时费" class="w100">
           <label><input type="checkbox" v-model="itemForm.is_additional"> 增项（需审批）</label>
           <button class="btn ok" @click="submitItem">保存</button>
           <button class="btn" @click="showAddItem=false">取消</button>
@@ -481,7 +481,7 @@
             <option value="">选择配件</option>
             <option v-for="p in parts" :key="p.id" :value="p.id">{{p.name}}（库存{{p.stock}}{{p.unit}} ¥{{fmt(p.price)}}）</option>
           </select>
-          <input type="number" v-model="usageForm.quantity" placeholder="数量" class="w80">
+          <input type="number" min="0" v-model="usageForm.quantity" placeholder="数量" class="w80">
           <input v-model="usageForm.issued_by" placeholder="领用人" class="w120">
           <button class="btn ok" @click="submitUsage">确认领用</button>
           <button class="btn" @click="showUsage=false">取消</button>
@@ -506,7 +506,7 @@
         <h4>💰 结算收银</h4>
         <p>工时费 ¥{{fmt(detail.itemsAmount)}} ＋ 配件费 ¥{{fmt(detail.partsAmount)}}</p>
         <div class="row">
-          <label>优惠金额 <input type="number" v-model="settleForm.discount" class="w100"></label>
+          <label>优惠金额 <input type="number" min="0" v-model="settleForm.discount" class="w100"></label>
           <select v-model="settleForm.pay_method">
             <option>现金</option><option>微信</option><option>支付宝</option><option>银行卡</option><option>挂账</option>
           </select>
