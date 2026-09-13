@@ -95,10 +95,33 @@ app.get('/api/vehicles', h((req, res) => {
 app.post('/api/vehicles', h((req, res) => {
   const { plate_no, brand, model, vin = '', color = '', owner_name, owner_phone } = req.body;
   if (!plate_no || !brand || !model || !owner_name || !owner_phone) throw new Error('请填写完整车辆信息');
-  if (db.get('SELECT id FROM vehicles WHERE plate_no = ?', [plate_no])) throw new Error('该车牌已存在档案');
+  if (db.get('SELECT id FROM vehicles WHERE plate_no = ?', [plate_no])) throw new Error(`车牌号 ${plate_no} 已存在档案`);
   const id = db.run('INSERT INTO vehicles(plate_no,brand,model,vin,color,owner_name,owner_phone) VALUES (?,?,?,?,?,?,?)',
     [plate_no, brand, model, vin, color, owner_name, owner_phone]);
   res.json(db.get('SELECT * FROM vehicles WHERE id = ?', [id]));
+}));
+
+// 编辑车辆档案（车牌唯一性校验）
+app.put('/api/vehicles/:id', h((req, res) => {
+  const v = db.get('SELECT * FROM vehicles WHERE id = ?', [req.params.id]);
+  if (!v) throw new Error('车辆档案不存在');
+  const { plate_no, brand, model, vin = '', color = '', owner_name, owner_phone } = req.body;
+  if (!plate_no || !brand || !model || !owner_name || !owner_phone) throw new Error('请填写完整车辆信息');
+  const dup = db.get('SELECT id, owner_name FROM vehicles WHERE plate_no = ? AND id != ?', [plate_no, v.id]);
+  if (dup) throw new Error(`车牌号 ${plate_no} 已被「${dup.owner_name}」的档案使用，不能重复`);
+  db.run(`UPDATE vehicles SET plate_no=?, brand=?, model=?, vin=?, color=?, owner_name=?, owner_phone=? WHERE id=?`,
+    [plate_no, brand, model, vin, color, owner_name, owner_phone, v.id]);
+  res.json(db.get('SELECT * FROM vehicles WHERE id = ?', [v.id]));
+}));
+
+// 删除车辆档案（已有工单的禁止删除）
+app.delete('/api/vehicles/:id', h((req, res) => {
+  const v = db.get('SELECT * FROM vehicles WHERE id = ?', [req.params.id]);
+  if (!v) throw new Error('车辆档案不存在');
+  const c = db.get('SELECT COUNT(*) c FROM repair_orders WHERE vehicle_id = ?', [v.id]).c;
+  if (c > 0) throw new Error(`该车辆已有 ${c} 张维修工单，不能删除；如信息有误请使用编辑修改`);
+  db.run('DELETE FROM vehicles WHERE id = ?', [v.id]);
+  res.json({ ok: true });
 }));
 
 // ============ 配件库存 ============
@@ -124,12 +147,37 @@ app.post('/api/parts/:id/restock', h((req, res) => {
   res.json(db.get('SELECT * FROM parts WHERE id = ?', [part.id]));
 }));
 
+// 编辑配件（编码唯一性校验，可调价、改警戒值）
+app.put('/api/parts/:id', h((req, res) => {
+  const p = db.get('SELECT * FROM parts WHERE id = ?', [req.params.id]);
+  if (!p) throw new Error('配件不存在');
+  const { code, name, category = '通用', unit = '件', price = 0, warn_stock = 5 } = req.body;
+  if (!code || !name) throw new Error('请填写配件编码和名称');
+  if (Number(price) < 0) throw new Error('单价不能为负数');
+  const dup = db.get('SELECT id, name FROM parts WHERE code = ? AND id != ?', [code, p.id]);
+  if (dup) throw new Error(`配件编码 ${code} 已被「${dup.name}」使用，不能重复`);
+  db.run('UPDATE parts SET code=?, name=?, category=?, unit=?, price=?, warn_stock=? WHERE id=?',
+    [code, name, category, unit, Number(price), Number(warn_stock), p.id]);
+  res.json(db.get('SELECT * FROM parts WHERE id = ?', [p.id]));
+}));
+
+// 删除配件（已有领用记录的禁止删除）
+app.delete('/api/parts/:id', h((req, res) => {
+  const p = db.get('SELECT * FROM parts WHERE id = ?', [req.params.id]);
+  if (!p) throw new Error('配件不存在');
+  const c = db.get('SELECT COUNT(*) c FROM part_usages WHERE part_id = ?', [p.id]).c;
+  if (c > 0) throw new Error(`该配件已有 ${c} 条领用记录，不能删除；如不再使用可将库存清零`);
+  db.run('DELETE FROM parts WHERE id = ?', [p.id]);
+  res.json({ ok: true });
+}));
+
 // ============ 技师 ============
 app.get('/api/technicians', h((req, res) => {
+  // 返回全部技师（含已停用），派工下拉由前端过滤在职状态
   const rows = db.all(`
     SELECT t.*,
       (SELECT COUNT(*) FROM dispatches d WHERE d.technician_id = t.id AND d.status = 'assigned') AS active_jobs
-    FROM technicians t WHERE t.active = 1 ORDER BY t.id`);
+    FROM technicians t ORDER BY t.active DESC, t.id`);
   res.json(rows);
 }));
 
@@ -138,6 +186,19 @@ app.post('/api/technicians', h((req, res) => {
   if (!name) throw new Error('请填写技师姓名');
   const id = db.run('INSERT INTO technicians(name,phone,specialty) VALUES (?,?,?)', [name, phone, specialty]);
   res.json(db.get('SELECT * FROM technicians WHERE id = ?', [id]));
+}));
+
+// 停用 / 重新启用技师（历史派工记录保留，仅不再出现在派工下拉中）
+app.put('/api/technicians/:id/status', h((req, res) => {
+  const t = db.get('SELECT * FROM technicians WHERE id = ?', [req.params.id]);
+  if (!t) throw new Error('技师不存在');
+  const active = req.body.active ? 1 : 0;
+  if (!active && t.active) {
+    const jobs = db.get(`SELECT COUNT(*) c FROM dispatches WHERE technician_id = ? AND status = 'assigned'`, [t.id]).c;
+    if (jobs > 0) throw new Error(`${t.name} 还有 ${jobs} 个未完工的派工任务，请先完工或改派后再停用`);
+  }
+  db.run('UPDATE technicians SET active = ? WHERE id = ?', [active, t.id]);
+  res.json(db.get('SELECT * FROM technicians WHERE id = ?', [t.id]));
 }));
 
 // ============ 维修工单 ============

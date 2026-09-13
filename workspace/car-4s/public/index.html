@@ -197,9 +197,23 @@
           <button class="btn ok" @click="createPart">保存</button>
         </div>
       </div>
+      <div class="panel" v-if="partEdit">
+        <h3>✏️ 编辑配件（{{partEdit.code}} {{partEdit.name}}）</h3>
+        <div class="row">
+          <input v-model="partEdit.code" placeholder="编码*">
+          <input v-model="partEdit.name" placeholder="名称*">
+          <input v-model="partEdit.category" placeholder="分类">
+          <input v-model="partEdit.unit" placeholder="单位" class="w80">
+          <label>单价 <input type="number" v-model="partEdit.price" class="w100"></label>
+          <label>警戒值 <input type="number" v-model="partEdit.warn_stock" class="w80"></label>
+          <button class="btn ok" @click="savePart">保存修改</button>
+          <button class="btn" @click="partEdit=null">取消</button>
+        </div>
+        <p class="muted">库存数量请通过「入库」或工单领用变更，此处不可直接修改。</p>
+      </div>
       <div class="panel">
         <table>
-          <thead><tr><th>编码</th><th>名称</th><th>分类</th><th>单价</th><th>库存</th><th>警戒值</th><th>操作</th></tr></thead>
+          <thead><tr><th>编码</th><th>名称</th><th>分类</th><th>单价</th><th>库存</th><th>警戒值</th><th>入库</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="p in parts" :key="p.id" :class="{'row-low': p.low}">
               <td>{{p.code}}</td><td>{{p.name}}</td><td>{{p.category}}</td><td>¥{{fmt(p.price)}}</td>
@@ -208,6 +222,10 @@
               <td>
                 <input type="number" v-model="restockQty[p.id]" class="w80" placeholder="数量">
                 <button class="btn sm" @click="restock(p)">入库</button>
+              </td>
+              <td>
+                <button class="btn sm" @click="startEditPart(p)">编辑</button>
+                <button class="btn sm danger" @click="removePart(p)">删除</button>
               </td>
             </tr>
           </tbody>
@@ -219,13 +237,33 @@
     <section v-if="view==='vehicles'">
       <h2>车辆档案</h2>
       <div class="row"><input v-model="vehicleQ" placeholder="搜索车牌 / 车主 / 电话" class="w240" @input="loadVehicles"></div>
+      <div class="panel" v-if="vehicleEdit">
+        <h3>✏️ 编辑车辆档案（{{vehicleEdit.plate_no}}）</h3>
+        <div class="row">
+          <input v-model="vehicleEdit.plate_no" placeholder="车牌号*">
+          <input v-model="vehicleEdit.brand" placeholder="品牌*">
+          <input v-model="vehicleEdit.model" placeholder="车型*">
+          <input v-model="vehicleEdit.color" placeholder="颜色">
+        </div>
+        <div class="row">
+          <input v-model="vehicleEdit.vin" placeholder="VIN码">
+          <input v-model="vehicleEdit.owner_name" placeholder="车主姓名*">
+          <input v-model="vehicleEdit.owner_phone" placeholder="联系电话*">
+          <button class="btn ok" @click="saveVehicle">保存修改</button>
+          <button class="btn" @click="vehicleEdit=null">取消</button>
+        </div>
+      </div>
       <div class="panel">
         <table>
-          <thead><tr><th>车牌</th><th>品牌</th><th>车型</th><th>VIN</th><th>颜色</th><th>车主</th><th>电话</th><th>建档时间</th></tr></thead>
+          <thead><tr><th>车牌</th><th>品牌</th><th>车型</th><th>VIN</th><th>颜色</th><th>车主</th><th>电话</th><th>建档时间</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="v in vehicles" :key="v.id">
               <td>{{v.plate_no}}</td><td>{{v.brand}}</td><td>{{v.model}}</td><td>{{v.vin}}</td>
               <td>{{v.color}}</td><td>{{v.owner_name}}</td><td>{{v.owner_phone}}</td><td>{{v.created_at}}</td>
+              <td>
+                <button class="btn sm" @click="startEditVehicle(v)">编辑</button>
+                <button class="btn sm danger" @click="removeVehicle(v)">删除</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -245,11 +283,18 @@
       </div>
       <div class="panel">
         <table>
-          <thead><tr><th>姓名</th><th>电话</th><th>专长</th><th>在修任务</th><th>状态</th></tr></thead>
+          <thead><tr><th>姓名</th><th>电话</th><th>专长</th><th>在修任务</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>
-            <tr v-for="t in technicians" :key="t.id">
+            <tr v-for="t in technicians" :key="t.id" :class="{'row-inactive': !t.active}">
               <td>{{t.name}}</td><td>{{t.phone}}</td><td>{{t.specialty}}</td><td>{{t.active_jobs}}</td>
-              <td><span class="tag" :class="t.active_jobs?'tag-orange':'tag-green'">{{t.active_jobs?'维修中':'空闲'}}</span></td>
+              <td>
+                <span v-if="!t.active" class="tag tag-gray">已停用</span>
+                <span v-else class="tag" :class="t.active_jobs?'tag-orange':'tag-green'">{{t.active_jobs?'维修中':'空闲'}}</span>
+              </td>
+              <td>
+                <button v-if="t.active" class="btn sm danger" @click="toggleTech(t)">停用</button>
+                <button v-else class="btn sm ok" @click="toggleTech(t)">重新启用</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -401,7 +446,7 @@
         <div class="row">
           <select v-model="dispatchForm.technician_id">
             <option value="">选择技师</option>
-            <option v-for="t in technicians" :key="t.id" :value="t.id">
+            <option v-for="t in activeTechnicians" :key="t.id" :value="t.id">
               {{t.name}}（{{t.specialty}}）{{t.active_jobs ? '·在修'+t.active_jobs+'单' : '·空闲'}}
             </option>
           </select>

@@ -39,6 +39,7 @@ th { color: #909399; font-weight: 500; font-size: 13px; background: #fafafa; }
 tr:hover td { background: #f5f7fa; }
 tr.sel td { background: #ecf5ff; }
 tr.row-low td { background: #fef0f0; }
+tr.row-inactive td { color: #b0b4bb; background: #fafafa; }
 .ellipsis { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 .empty { color: #909399; padding: 14px 0; text-align: center; }
 

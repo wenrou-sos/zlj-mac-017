@@ -170,12 +170,25 @@ createApp({
     const parts = ref([]);
     const restockQty = reactive({});
     const partForm = reactive({ code: '', name: '', category: '通用', unit: '件', price: 0, stock: 0, warn_stock: 5 });
+    const partEdit = ref(null);
     const loadParts = async () => { parts.value = await api('/api/parts'); };
     const createPart = () => run(async () => {
       await api('/api/parts', 'POST', partForm);
       Object.assign(partForm, { code: '', name: '', category: '通用', unit: '件', price: 0, stock: 0, warn_stock: 5 });
       loadParts(); loadDash();
     }, '配件已保存');
+    const startEditPart = p => { partEdit.value = { ...p }; };
+    const savePart = () => run(async () => {
+      await api(`/api/parts/${partEdit.value.id}`, 'PUT', partEdit.value);
+      partEdit.value = null;
+      loadParts(); loadDash();
+    }, '配件已更新');
+    const removePart = p => run(async () => {
+      if (!confirm(`确定删除配件「${p.code} ${p.name}」吗？`)) return;
+      await api(`/api/parts/${p.id}`, 'DELETE');
+      loadParts(); loadDash();
+      showToast('配件已删除');
+    });
     const restock = p => run(async () => {
       const qty = Number(restockQty[p.id]);
       if (!qty) throw new Error('请输入入库数量');
@@ -186,17 +199,39 @@ createApp({
     // ---------- 车辆 / 技师 / 结算 ----------
     const vehicles = ref([]);
     const vehicleQ = ref('');
+    const vehicleEdit = ref(null);
     const loadVehicles = async () => {
       vehicles.value = await api(`/api/vehicles?q=${encodeURIComponent(vehicleQ.value)}`);
     };
+    const startEditVehicle = v => { vehicleEdit.value = { ...v }; };
+    const saveVehicle = () => run(async () => {
+      await api(`/api/vehicles/${vehicleEdit.value.id}`, 'PUT', vehicleEdit.value);
+      vehicleEdit.value = null;
+      loadVehicles();
+    }, '车辆档案已更新');
+    const removeVehicle = v => run(async () => {
+      if (!confirm(`确定删除车辆档案「${v.plate_no}（${v.owner_name}）」吗？`)) return;
+      await api(`/api/vehicles/${v.id}`, 'DELETE');
+      loadVehicles();
+      showToast('车辆档案已删除');
+    });
+
     const technicians = ref([]);
     const techForm = reactive({ name: '', phone: '', specialty: '' });
     const loadTechs = async () => { technicians.value = await api('/api/technicians'); };
+    const activeTechnicians = computed(() => technicians.value.filter(t => t.active));
     const createTech = () => run(async () => {
       await api('/api/technicians', 'POST', techForm);
       Object.assign(techForm, { name: '', phone: '', specialty: '' });
       loadTechs();
     }, '技师已添加');
+    const toggleTech = t => run(async () => {
+      const action = t.active ? '停用' : '重新启用';
+      if (t.active && !confirm(`确定停用技师「${t.name}」吗？停用后将不再出现在派工下拉中，历史派工记录保留。`)) return;
+      await api(`/api/technicians/${t.id}/status`, 'PUT', { active: t.active ? 0 : 1 });
+      loadTechs();
+      showToast(`已${action}技师 ${t.name}`);
+    });
     const settlements = ref([]);
     const loadSettlements = async () => { settlements.value = await api('/api/settlements'); };
 
@@ -226,9 +261,9 @@ createApp({
       usageForm, submitUsage, returnUsage,
       finishRepair, qcForm, submitQC, settleForm, submitSettle, deliver,
       recep, searchVehicles, createVehicle, addRecepItem, submitReception,
-      parts, partForm, createPart, restock, restockQty,
-      vehicles, vehicleQ, loadVehicles,
-      technicians, techForm, createTech,
+      parts, partForm, createPart, restock, restockQty, partEdit, startEditPart, savePart, removePart,
+      vehicles, vehicleQ, loadVehicles, vehicleEdit, startEditVehicle, saveVehicle, removeVehicle,
+      technicians, techForm, createTech, toggleTech, activeTechnicians,
       settlements,
     };
   },
